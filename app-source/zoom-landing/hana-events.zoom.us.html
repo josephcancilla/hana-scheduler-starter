@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en"><head><title>Hana Events + Experiences</title><meta http-equiv="Content-Type" content="text/html; charset=utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><link href="https://fonts.googleapis.com/css2?family=Marcellus&amp;family=Alata&amp;family=Jost:wght@400;500&amp;display=swap" rel="stylesheet" /><style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body { background: #0A0908; color: #F1ECE2; font-family: "Jost", sans-serif; overflow: hidden; }
+  .hana-bg { position: fixed; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; }
+  .hana-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(10, 9, 8, 0.78); }
+  .hana-smoke { position: fixed; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; mix-blend-mode: screen; pointer-events: none; z-index: 3; }
+  .hana-bg-m, .hana-smoke-m { display: none; }
+  @media (hover: none) and (pointer: coarse) {
+    .hana-bg, .hana-smoke { display: none; }
+    .hana-bg-m { display: block; position: fixed; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; }
+    .hana-smoke-m { display: block; position: fixed; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; mix-blend-mode: screen; pointer-events: none; z-index: 3; }
+  }
+  .hana-stage { position: relative; z-index: 2; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 2rem 1.25rem; gap: 1.5rem; }
+  .hana-stage img.hana-logo { height: 190px; width: auto; filter: drop-shadow(0 4px 24px rgba(0, 0, 0, 0.5)); }
+  .hana-stage h1 { font-family: "Marcellus", serif; font-weight: 400; font-size: clamp(1.45rem, 3.4vw, 2.9rem); letter-spacing: 0.06em; line-height: 1.3; text-transform: uppercase; text-shadow: 0 2px 28px rgba(0, 0, 0, 0.65); }
+  .hana-dim { color: rgba(255, 255, 255, 0.62); }
+  .hana-bright { color: #ffffff; }
+  .hana-serve { font-family: "Alata", "Jost", sans-serif; font-size: clamp(0.8rem, 1.15vw, 1.05rem); letter-spacing: 0.12em; text-transform: uppercase; color: rgba(255, 255, 255, 0.72); text-shadow: 0 2px 20px rgba(0, 0, 0, 0.65); margin-top: -0.4rem; }
+  .hana-links { display: flex; gap: 1.25rem; flex-wrap: wrap; justify-content: center; margin-top: 0.9rem; }
+  .hana-btn { position: relative; display: inline-block; color: #F1ECE2; font-weight: 500; font-size: 0.95rem; letter-spacing: 0.18em; text-transform: uppercase; border: 1px solid rgba(241, 236, 226, 0.6); border-radius: 3px; padding: 0.85rem 1.6rem; transition: background-color 0.25s ease, color 0.25s ease; }
+  .hana-btn:hover { background: #F1ECE2; color: #0A0908; }
+  .hana-primary { background: #F1ECE2; color: #0A0908; border-color: #F1ECE2; }
+  .hana-primary:hover { background: #ffffff; }
+  .hana-hit { position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+  @media (max-width: 640px) {
+    .hana-stage { gap: 1.2rem; }
+    .hana-stage img.hana-logo { height: 140px; }
+    .hana-links { flex-direction: column; align-items: stretch; gap: 0.75rem; width: 100%; max-width: 320px; }
+    .hana-btn { display: block; text-align: center; padding: 0.85rem 1.2rem; font-size: 0.9rem; }
+  }
+</style></head><body>
+<video class="hana-bg" autoplay="autoplay" muted="muted" loop="loop" poster="https://calendar.hana.events/hana-hero-poster.webp" src="https://calendar.hana.events/hana-hero-loop-slow.mp4"></video>
+<img class="hana-bg-m" src="https://calendar.hana.events/hana-hero-mobile-v2.webp" alt="">
+<div class="hana-overlay"></div>
+<video class="hana-smoke" autoplay="autoplay" muted="muted" loop="loop" src="https://calendar.hana.events/hana-smoke-loop-v3.mp4"></video>
+<img class="hana-smoke-m" src="https://calendar.hana.events/hana-smoke-mobile-v2.webp" alt="">
+<div class="hana-stage">
+  <img class="hana-logo" src="https://calendar.hana.events/logo-vertical.png" alt="Hana Events + Experiences">
+  <h1><span class="hana-dim">Event design that connects<br>people to </span><span class="hana-bright">Presence + Purpose</span></h1>
+  <p class="hana-serve">Corporate Events &bull; Luxury Parties &bull; DMCs &bull; Resorts &bull; Restaurants</p>
+  <div class="hana-links">
+    <span class="hana-btn hana-primary">Join Zoom<img class="hana-hit" src="https://calendar.hana.events/logo-vertical.png" alt="" usemap="#hana-zoom"></span>
+    <span class="hana-btn">Hana Website<img class="hana-hit" src="https://calendar.hana.events/logo-vertical.png" alt="" usemap="#hana-site"></span>
+    <span class="hana-btn">Schedule with Joseph<img class="hana-hit" src="https://calendar.hana.events/logo-vertical.png" alt="" usemap="#hana-cal"></span>
+  </div>
+  <map name="hana-zoom"><area shape="rect" coords="0,0,4000,4000" href="https://hana-events.zoom.us/j/0000000000?pwd=REDACTED" alt="Join Zoom"></map>
+  <map name="hana-site"><area shape="rect" coords="0,0,4000,4000" href="https://hana.events" alt="Hana Website"></map>
+  <map name="hana-cal"><area shape="rect" coords="0,0,4000,4000" href="https://calendar.hana.events" alt="Schedule with Joseph"></map>
+</div>
+</body></html>

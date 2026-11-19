@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/booking/reminders?window=daily",
+      "schedule": "0 16 * * *"
+    }
+  ]
+}

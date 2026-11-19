@@ -1,0 +1,25 @@
+{
+  "name": "hana-calendar",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Self-hosted scheduler for Joseph Cancilla / Hana Events + Experiences. Replaces Calendly.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "next": "15.5.28",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "react-icons": "^5.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.2",
+    "@types/react": "19.1.0",
+    "@types/react-dom": "19.1.0",
+    "typescript": "5.7.2"
+  }
+}

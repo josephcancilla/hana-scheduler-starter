@@ -1,0 +1,226 @@
+#!/usr/bin/env python3
+"""scheduler-booking-sweep — catch-up for calendar.hana.events bookings.
+
+Joseph order 2026-09-03: "Any scheduler meeting that comes in should
+automatically be checking to see if they're in our Networking app in our Hana
+workspace or in our Unbound workspace at all... All of these things need to be
+happening ongoing."
+
+The live path is the signed webhook the scheduler fires at booking time into
+the Mac-side receiver. That path is fail-soft on purpose (a Podio outage must
+never cost a client their booking), which means a booking made while this Mac
+is asleep, off-grid (van mode, Rule 31) or the tunnel is down never reaches
+Podio. This sweep closes that hole: every run it reads the booking calendar,
+picks out scheduler bookings (the app stamps each one with the hanaBooking
+private property), and pushes any the ingest ledger has not seen through the
+SAME ingest as the webhook — same Podio lookups in both workspaces, same
+comment, same vault note, same ledger. Zero Claude calls (Rule 25). Idempotent
+by ledger (Rule 14c). Run receipts (Rule 45).
+
+Usage: scheduler-booking-sweep [--dry-run] [--days-back N] [--days-fwd N]
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+AXIS = Path.home() / ".axis"
+sys.path.insert(0, str(AXIS / "lib"))
+
+AGENT = "scheduler-booking-sweep"
+LEDGER = AXIS / "state" / "scheduler-booking" / "processed.jsonl"
+INGEST = AXIS / "lib" / "scheduler_booking_ingest.py"
+CALENDAR = AXIS / "bin" / "axis-calendar"
+LOG = AXIS / "logs" / "scheduler-booking" / "sweep.log"
+
+
+def log(msg: str) -> None:
+    LOG.parent.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    with LOG.open("a") as f:
+        f.write(f"[{ts}] {msg}\n")
+    print(msg)
+
+
+def _utc(iso: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(timezone.utc).replace(second=0, microsecond=0)
+    except Exception:
+        return None
+
+
+def seen_bookings() -> set[tuple[str, str, datetime]]:
+    """(event, email, start-minute-UTC) for every booking event the ingest
+    already handled, whatever ISO spelling the webhook used for the start."""
+    out = set()
+    if not LEDGER.exists():
+        return out
+    for line in LEDGER.read_text().splitlines():
+        try:
+            r = json.loads(line)
+        except Exception:
+            continue
+        key = r.get("key") or ""
+        parts = key.split("|")
+        ev = parts[0] if len(parts) > 2 else "booking.created"
+        email = (r.get("email") or (parts[1] if len(parts) > 2 else "")).lower()
+        start = _utc(parts[2]) if len(parts) > 2 else None
+        if email and start:
+            out.add((ev, email, start))
+    return out
+
+
+def list_events(days_back: int, days_fwd: int) -> list[dict]:
+    """Scheduler bookings on the calendar: past window catches bookings made
+    while offline for a meeting that already happened; forward window is where
+    almost all of them live."""
+    events: list[dict] = []
+    for days in (-days_back, days_fwd):
+        # One Google Calendar API stall must not crash the whole sweep — every
+        # timeout seen in production was an isolated blip (surrounding runs,
+        # 30 min apart, completed in seconds), so a single retry clears it.
+        last_err = None
+        for attempt in range(2):
+            if attempt:
+                # Immediate back-to-back retries never clear a real DNS/network
+                # stall (seen 2026-11-12: ~2hr outage failed every run at 0s gap).
+                # A few seconds gives the blip a chance to actually pass.
+                time.sleep(5)
+            try:
+                proc = subprocess.run([str(CALENDAR), "list", "--days", str(days), "--json", "--show-deleted"],
+                                      capture_output=True, text=True, timeout=120)
+                if proc.returncode != 0:
+                    raise RuntimeError(f"axis-calendar exited {proc.returncode}: {proc.stderr.strip()}")
+                events.extend(json.loads(proc.stdout or "[]"))
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                log(f"calendar list failed days={days} attempt={attempt + 1}: {e}")
+        if last_err is not None:
+            raise last_err
+    out, ids = [], set()
+    for e in events:
+        priv = ((e.get("extendedProperties") or {}).get("private") or {})
+        if priv.get("hanaBooking") != "1":
+            continue
+        if e.get("id") in ids:
+            continue
+        ids.add(e.get("id"))
+        out.append(e)
+    return out
+
+
+def payload_for(e: dict) -> dict | None:
+    priv = ((e.get("extendedProperties") or {}).get("private") or {})
+    email = (priv.get("inviteeEmail") or "").strip().lower()
+    if not email:
+        att = [a.get("email") for a in e.get("attendees", []) if not a.get("self")]
+        email = (att[0] if att else "").lower()
+    start = (e.get("start") or {}).get("dateTime") or ""
+    end = (e.get("end") or {}).get("dateTime") or ""
+    if not email or not start:
+        return None
+    slug = priv.get("eventSlug_0") or priv.get("eventSlug") or ""
+    m = re.search(r"Booked via calendar\.hana\.events \(([^)]+)\)", e.get("description") or "")
+    event_name = m.group(1) if m else (e.get("summary") or slug or "a meeting")
+    return {
+        "event": "booking.created",
+        "slug": slug,
+        "eventName": event_name,
+        "inviteeName": priv.get("inviteeName") or "",
+        "inviteeEmail": email,
+        "inviteePhone": priv.get("inviteePhone") or "",
+        "startIso": start,
+        "endIso": end,
+        "inviteeTz": priv.get("inviteeTz") or "America/Phoenix",
+        "location": priv.get("location") or "zoom",
+        "joinUrl": priv.get("joinUrl") or None,
+        "answers": {},
+        "calendarEventId": e.get("id"),
+        "source": "scheduler-booking-sweep",
+    }
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--days-back", type=int, default=3)
+    ap.add_argument("--days-fwd", type=int, default=90)
+    a = ap.parse_args()
+
+    # Time-window guard (Rule 14b): quiet overnight, safe to re-fire on login.
+    hour = int(subprocess.run(["date", "+%H"], capture_output=True, text=True,
+                              env={**os.environ, "TZ": "America/Phoenix"}).stdout.strip() or "12")
+    from axis_run_receipt import start_run, end_run
+    run_id = start_run(AGENT)
+    if not a.dry_run and not (5 <= hour <= 22):
+        print(f"outside 5-22 PHX window (hour={hour}), skipping")
+        end_run(AGENT, run_id, status="skipped", error_count=0, note=f"outside 5-22 PHX window (hour={hour})")
+        return 0
+
+    status, err, handled = "ok", 0, []
+    try:
+        seen = seen_bookings()
+        events = list_events(a.days_back, a.days_fwd)
+        missing = []
+        for e in events:
+            p = payload_for(e)
+            if not p:
+                continue
+            ident = (p["inviteeEmail"], _utc(p["startIso"]))
+            if e.get("status") == "cancelled":
+                # Only a booking we actually filed can be un-filed; and only once.
+                priv = ((e.get("extendedProperties") or {}).get("private") or {})
+                if ("booking.created",) + ident in seen and ("booking.cancelled",) + ident not in seen \
+                        and ("booking.rescheduled",) + ident not in seen:
+                    p["event"] = "booking.cancelled"
+                    if priv.get("rescheduledTo"):
+                        p["reason"] = "rescheduled"   # the new booking carries the status; only note it
+                    else:
+                        p["reason"] = "invitee_cancelled"
+                    missing.append(p)
+                continue
+            if ("booking.created",) + ident in seen:
+                continue
+            missing.append(p)
+        log(f"scheduler bookings on calendar={len(events)} already in ledger={len(events)-len(missing)} missing={len(missing)}")
+        for p in missing:
+            if a.dry_run:
+                print(f"DRY would ingest {p['event']} {p['inviteeEmail']} {p['eventName']} {p['startIso']}")
+                continue
+            try:
+                r = subprocess.run(["/usr/bin/python3", str(INGEST)], input=json.dumps(p),
+                                   capture_output=True, text=True, timeout=300)
+            except subprocess.TimeoutExpired:
+                # One slow booking must never stop the rest; the ledger only
+                # records finished ingests, so this one is retried next run.
+                log(f"ingest {p['inviteeEmail']} timed out after 300s; will retry next run")
+                err += 1
+                continue
+            out = (r.stdout or "").strip().splitlines()
+            log(f"ingest {p['inviteeEmail']} -> {out[-1][:200] if out else r.stderr.strip()[:200]}")
+            if r.returncode != 0 or '"ok": false' in (r.stdout or ""):
+                err += 1
+            else:
+                handled.append(p["inviteeEmail"])
+        if err:
+            status = "error"
+    except Exception as e:
+        status, err = "error", err + 1
+        log(f"sweep crashed: {e!r}")
+    finally:
+        end_run(AGENT, run_id, status=status, error_count=err, counts={"handled": len(handled)},
+                note=f"handled={handled}" if handled else "nothing missing")
+    return 1 if status == "error" else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

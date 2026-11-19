@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hana Events + Experiences</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Marcellus&family=Jost:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body { height: 100%; }
+
+  body {
+    background: #0A0908;
+    color: #F1ECE2;
+    font-family: "Jost", sans-serif;
+    overflow: hidden;
+  }
+
+  .bg-video {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: 50% 50%;
+  }
+
+  /* Mid-opacity dark wash so the white type reads over the motion. */
+  .overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(10, 9, 8, 0.45);
+  }
+
+  .stage {
+    position: relative;
+    z-index: 2;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 2rem 1.25rem;
+    gap: 2.25rem;
+  }
+
+  .mark img {
+    height: clamp(150px, 22vh, 220px);
+    width: auto;
+    filter: drop-shadow(0 4px 24px rgba(0, 0, 0, 0.45));
+  }
+
+  h1 {
+    font-family: "Marcellus", serif;
+    font-weight: 400;
+    font-size: clamp(1.5rem, 4.2vw, 3.1rem);
+    letter-spacing: 0.06em;
+    line-height: 1.35;
+    text-transform: uppercase;
+    max-width: 20ch;
+  }
+
+  h1 .dim { color: rgba(255, 255, 255, 0.5); }
+  h1 .bright { color: #ffffff; }
+
+  .links {
+    display: flex;
+    gap: 2.5rem;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .links a {
+    color: #F1ECE2;
+    text-decoration: none;
+    font-weight: 500;
+    font-size: clamp(0.85rem, 1.1vw, 1rem);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    border: 1px solid rgba(241, 236, 226, 0.55);
+    border-radius: 3px;
+    padding: 0.8rem 1.6rem;
+    transition: background-color 0.25s ease, color 0.25s ease;
+  }
+
+  .links a:hover {
+    background: #F1ECE2;
+    color: #0A0908;
+  }
+
+  @media (max-width: 600px) {
+    .stage { gap: 1.75rem; }
+    .links { gap: 1rem; }
+    .links a { padding: 0.7rem 1.25rem; }
+  }
+</style>
+</head>
+<body>
+  <video class="bg-video" autoplay muted loop playsinline
+         poster="/hana-hero-poster.webp"
+         src="/hana-hero-loop.mp4"></video>
+  <div class="overlay"></div>
+
+  <main class="stage">
+    <div class="mark">
+      <img src="/logo-vertical.png" alt="Hana Events + Experiences">
+    </div>
+
+    <h1>
+      <span class="dim">Event design that connects<br>people to </span><span class="bright">Presence + Purpose</span>
+    </h1>
+
+    <nav class="links">
+      <a href="https://www.hana.events">hana.events</a>
+      <a href="https://calendar.hana.events">Book Time</a>
+    </nav>
+  </main>
+</body>
+</html>

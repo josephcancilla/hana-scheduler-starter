@@ -1,0 +1,265 @@
+#!/usr/bin/env zsh
+# atlas-reminder-pulse — zero-Claude curl pulse against the hana-calendar
+# scheduler's reminder endpoint.
+#
+# Fires every 10 minutes via launchd. This bin makes zero Claude calls and
+# does no reasoning of its own — it is a bare curl, which is what satisfies
+# Rule 25 (don't wake Claude with no work) by construction, not by a
+# pre-check bolted on top.
+#
+# Flow:
+#   1. Run receipt start (Rule 45 — every run, including every skip path).
+#   2. Time-window guard: refuse outside 05-22 PHX hours (Rule 14b).
+#   3. Load ATLAS_SCHEDULER_URL + CRON_SECRET from ~/.axis/config/.env.
+#      Values are never echoed anywhere — not to stdout, not to the log,
+#      not inside any error note.
+#   4. If ATLAS_SCHEDULER_URL is unset: quiet skip. The scheduler app isn't
+#      deployed yet — this is an expected state, not a misconfiguration.
+#   5. If CRON_SECRET is missing while the URL IS set: that IS a real
+#      misconfiguration — reported through the Notify Gate.
+#   6. curl the reminder endpoint with a 30s timeout. A network-down curl
+#      exit code (6/7/28/35/52/56/97) is Van Mode (Rule 31) — May-Oct the
+#      Starlink goes off overnight in the van, and that is a quiet skip,
+#      never an alert. Any other curl failure, or a non-200 HTTP response
+#      while genuinely online, closes the receipt as an error and reports
+#      through the Notify Gate — this bin never pages anyone directly;
+#      Sentinel's fail-rate watch owns escalation.
+#   7. Run receipt end, always, on every exit path.
+#
+# Credential pattern: STATIC (CRON_SECRET) read by name only, per the
+# defensive minimum in ~/.axis/agents/atlas/CLAUDE.md.
+#
+# Power-down survivability: (c) inherent idempotency — the app's own
+# send-state gates each reminder, not anything tracked here, so a missed or
+# doubled pulse is harmless. Safe to re-fire on every login (RunAtLoad=true
+# in the plist).
+
+set -uo pipefail
+
+AXIS="$HOME/.axis"
+AGENT="atlas-reminder-pulse"
+RECEIPT_CLI="$AXIS/lib/axis_run_receipt.py"
+LOG_DIR="$AXIS/logs/$AGENT"
+LOG="$LOG_DIR/pulse.log"
+mkdir -p "$LOG_DIR" 2>/dev/null
+
+_log() {
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG"
+}
+
+# ── run receipt (start) ──────────────────────────────────────────────────────
+# --pid $$ records THIS shell's pid, not the short-lived `start` helper
+# process's own pid (which exits a millisecond later). Without it, every
+# liveness check (ps -p <recorded pid>) reads a run as dead the instant it
+# starts, whether it's still healthy or genuinely stuck — see the
+# arm_crash_net docstring in axis_run_receipt.py for the documented
+# contract this bin was skipping.
+RUN_ID=$(python3 "$RECEIPT_CLI" start "$AGENT" --trigger launchd --pid "$$" 2>/dev/null || echo "unknown")
+
+_end_receipt() {
+  # NOTE: "status" is a read-only reserved variable in zsh (mirrors $?),
+  # so the local var here is named "recv_status" to avoid a silent failure.
+  local recv_status="$1" note="$2"
+  python3 "$RECEIPT_CLI" end "$AGENT" --run-id "$RUN_ID" --status "$recv_status" --note "$note" --pid "$$" 2>/dev/null || true
+}
+
+_notify_gate() {
+  # $1=failure_type $2=summary $3=why $4=recommended_fix
+  python3 - "$1" "$2" "$3" "$4" <<'PYEOF' 2>>"$LOG" || true
+import sys, os
+sys.path.insert(0, os.path.expanduser("~/.axis/lib"))
+failure_type, summary, why, fix = sys.argv[1:5]
+try:
+    from axis_failure_log import report
+    report(
+        agent="atlas-reminder-pulse",
+        failure_type=failure_type,
+        summary=summary,
+        why=why,
+        recommended_fix=fix,
+        responsible="axis",
+    )
+except Exception:
+    pass
+PYEOF
+}
+
+# ── time-window guard (Rule 14b): 05-22 PHX only ────────────────────────────
+AZ_HOUR=$(TZ="America/Phoenix" date +"%H")
+if [ "$AZ_HOUR" -lt 5 ] || [ "$AZ_HOUR" -ge 22 ]; then
+  _log "outside fire window (AZ hour=$AZ_HOUR, allowed 05-22) — skipping"
+  _end_receipt "skipped" "outside_time_window hour=$AZ_HOUR"
+  exit 0
+fi
+
+# ── load env (never echo values) ────────────────────────────────────────────
+ENV_VALS=$(python3 - <<'PYEOF' 2>/dev/null
+import sys, os, shlex
+sys.path.insert(0, os.path.expanduser("~/.axis/lib"))
+from axis_load_env import load_env
+env = load_env()
+print("SCHED_URL=" + shlex.quote(env.get("ATLAS_SCHEDULER_URL", "")))
+print("CRON_TOK=" + shlex.quote(env.get("CRON_SECRET", "")))
+PYEOF
+) || ENV_VALS=""
+eval "$ENV_VALS"
+
+# ── not yet deployed: quiet skip, not an error ──────────────────────────────
+if [ -z "${SCHED_URL:-}" ]; then
+  _log "ATLAS_SCHEDULER_URL not set — scheduler not deployed yet, skipping"
+  _end_receipt "skipped" "scheduler_url_unset"
+  exit 0
+fi
+
+# ── real misconfig: URL is set but the auth secret is missing ──────────────
+if [ -z "${CRON_TOK:-}" ]; then
+  _log "CRON_SECRET missing while ATLAS_SCHEDULER_URL is set — ENV_VALIDATION_FAILED:CRON_SECRET"
+  _end_receipt "error" "missing CRON_SECRET"
+  _notify_gate "env_validation_failed" \
+    "atlas-reminder-pulse could not fire: CRON_SECRET is missing even though ATLAS_SCHEDULER_URL is set." \
+    "ATLAS_SCHEDULER_URL is configured but CRON_SECRET is empty in ~/.axis/config/.env, so the reminder endpoint can never be called with a valid Authorization header." \
+    "Run atlas-wire-vercel (or check ~/.axis/config/.env directly) to confirm CRON_SECRET is set, then rerun."
+  exit 0
+fi
+
+# ── the pulse itself ─────────────────────────────────────────────────────────
+RESP_FILE=$(mktemp /tmp/atlas-reminder-pulse.XXXXXX)
+HTTP_CODE=$(curl -sS --max-time 30 -o "$RESP_FILE" -w "%{http_code}" \
+  -H "Authorization: Bearer ${CRON_TOK}" \
+  "${SCHED_URL}/api/booking/reminders?window=tight&sms=list")
+CURL_EXIT=$?
+
+if [ "$CURL_EXIT" -ne 0 ]; then
+  case "$CURL_EXIT" in
+    6|7|28|35|52|56|97)
+      # Couldn't resolve host / couldn't connect / timeout / SSL connect
+      # failure / empty reply / recv failure / no internet. All read as
+      # Van Mode — offline is expected May-Oct, never an alert.
+      _log "network unreachable (curl exit=$CURL_EXIT) — quiet skip, Van Mode"
+      _end_receipt "skipped" "network_unreachable curl_exit=$CURL_EXIT (van mode)"
+      rm -f "$RESP_FILE"
+      exit 0
+      ;;
+    *)
+      _log "curl failed, exit=$CURL_EXIT"
+      _end_receipt "error" "curl_failed exit=$CURL_EXIT"
+      _notify_gate "curl_failed" \
+        "atlas-reminder-pulse's curl call to the reminder endpoint failed (exit $CURL_EXIT) while online." \
+        "curl returned a non-network-down exit code, so this was not treated as Van Mode offline." \
+        "Check ~/.axis/logs/atlas-reminder-pulse/pulse.log for the exact curl exit code and confirm ATLAS_SCHEDULER_URL is reachable."
+      rm -f "$RESP_FILE"
+      exit 0
+      ;;
+  esac
+fi
+
+if [ "$HTTP_CODE" = "200" ]; then
+  # ── morning-of texts (sms=list flow) ──────────────────────────────────────
+  # The sweep returns due morning texts instead of sending them (Twilio was
+  # never provisioned). This Mac delivers each via iMessage through the
+  # canonical send library (identity-disclosure gate included), then marks
+  # it sent on the server so it never fires twice. A local ledger is the
+  # belt-and-suspenders dedup for the send-then-mark gap.
+  SMS_NOTE=$(python3 - "$RESP_FILE" "$SCHED_URL" "$CRON_TOK" <<'PYEOF' 2>>"$LOG"
+import json, os, sys, time, urllib.request
+
+resp_file, sched_url, cron_tok = sys.argv[1:4]
+sys.path.insert(0, os.path.expanduser("~/.axis/lib"))
+
+try:
+    data = json.load(open(resp_file))
+except Exception:
+    print("sms=0 (no parseable body)")
+    raise SystemExit(0)
+
+due = data.get("smsDue") or []
+if not due:
+    print("sms=0")
+    raise SystemExit(0)
+
+ledger_path = os.path.expanduser("~/.axis/state/atlas/sms_sent.jsonl")
+os.makedirs(os.path.dirname(ledger_path), exist_ok=True)
+seen = set()
+if os.path.exists(ledger_path):
+    for line in open(ledger_path):
+        try:
+            row = json.loads(line)
+            # Keyed per event AND phone: a booking with a guest has two
+            # morning texts on one event (Joseph order 2026-10-17).
+            seen.add((row["eventId"], row.get("phone", "")))
+        except Exception:
+            pass
+
+from axis_imessage_send import send_imessage
+
+# Each send is already bounded to ~20s by send_imessage's own osascript
+# timeout, but nothing bounded the LOOP. A batch of due/stuck sends serially
+# eating 20s each has no ceiling, so a big-enough batch can run the whole
+# bin well past its 10-minute schedule slot with zero log output until it
+# finishes -- and if anything (sleep, a kill, a reboot) interrupts it mid-
+# batch, the run never reaches its own end-of-run receipt (orphan_start).
+# Found 2026-11-05: a run starting 13:48:43 PHX never wrote an end row; the
+# ~936s gap before the next scheduled fire is ~47 x the 20s per-item cap,
+# consistent with a large batch run serially with no overall deadline.
+# Deadline is comfortably under the 600s schedule interval so this bin can
+# never be the reason the next scheduled fire gets delayed or the receipt
+# goes unclosed. Anything not reached this pass is simply still "due" next
+# poll -- the ledger only ever records a completed send, so deferring here
+# is exactly as safe as the existing retry-next-cycle design already is.
+SMS_LOOP_DEADLINE_S = 180
+loop_start = time.monotonic()
+sent = skipped = failed = deferred = 0
+for item in due:
+    if time.monotonic() - loop_start > SMS_LOOP_DEADLINE_S:
+        deferred += 1
+        continue
+    ev_id = item.get("eventId", "")
+    phone = item.get("phone", "")
+    body = item.get("body", "")
+    if not ev_id or not phone or not body:
+        continue
+    if (ev_id, phone[-4:]) in seen:
+        skipped += 1
+        continue
+    ok = False
+    try:
+        ok = send_imessage(phone, body)
+    except Exception:
+        ok = False
+    if not ok:
+        failed += 1
+        continue
+    sent += 1
+    with open(ledger_path, "a") as f:
+        f.write(json.dumps({"eventId": ev_id, "phone": phone[-4:], "ts": data.get("now", "")}) + "\n")
+    try:
+        req = urllib.request.Request(
+            sched_url + "/api/booking/reminders/smsmark",
+            data=json.dumps({"calendarId": item.get("calendarId", ""), "eventId": ev_id}).encode(),
+            headers={"Authorization": "Bearer " + cron_tok, "Content-Type": "application/json"},
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=30)
+    except Exception:
+        # Ledger already protects against a resend from this Mac; the next
+        # pulse retries the mark implicitly by re-listing + ledger-skipping.
+        pass
+
+print(f"sms sent={sent} skipped={skipped} failed={failed} deferred={deferred}")
+PYEOF
+) || SMS_NOTE="sms_lane_error"
+  _log "pulse ok (http $HTTP_CODE) ${SMS_NOTE:-}"
+  _end_receipt "ok" "http_200 ${SMS_NOTE:-}"
+  rm -f "$RESP_FILE"
+  exit 0
+fi
+
+BODY_SNIPPET=$(head -c 300 "$RESP_FILE" 2>/dev/null | tr -d '\n')
+_log "pulse returned http $HTTP_CODE — body: $BODY_SNIPPET"
+_end_receipt "error" "http_${HTTP_CODE}"
+_notify_gate "non_200_response" \
+  "atlas-reminder-pulse got HTTP $HTTP_CODE from the reminder endpoint while online." \
+  "The scheduler is reachable but did not return 200 OK for the reminder pulse." \
+  "Check the hana-calendar deployment logs for /api/booking/reminders and confirm CRON_SECRET matches the value set on Vercel."
+rm -f "$RESP_FILE"
+exit 0
