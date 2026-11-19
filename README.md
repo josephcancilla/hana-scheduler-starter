@@ -4,6 +4,14 @@ This is the booking system behind calendar.hana.events. It replaced Calendly. It
 
 Shared as a template. Swap in your own brand, hours, copy and contact details before you go live.
 
+## Start here: put it in YOUR GitHub first
+
+1. Click **Use this template** (top right on GitHub), then **Create a new repository** in your own GitHub account. Make it private.
+2. Have your agent clone **your** copy and make all changes there. GitHub is the home of the code.
+3. When you are ready to go live, connect that GitHub repo to Vercel (Vercel > Add New Project > Import from GitHub, root folder `app-source`). After that, every push to GitHub deploys the site by itself.
+
+Never deploy straight from a laptop to Vercel. If the code only lives on Vercel, nobody can see it, fix it or roll it back.
+
 ## What is in here
 
 - `app-source/` : the full site code. Start with `lib/booking/` (the engine), then `app/` (pages and routes).
@@ -28,7 +36,7 @@ The event list lives in `app-source/lib/booking/events.ts`. That is the one file
 - A Google OAuth client and refresh token with Calendar and Gmail send.
 - A Zoom Server-to-Server app (optional; without it bookings still work and the email says the link follows).
 - Resend or Gmail for email. Twilio for texts (optional).
-- A Vercel project. Put the settings from `env.example` in Vercel's encrypted env, never in the repo.
+- A Vercel project imported from your GitHub repo. Put the settings from `env.example` in Vercel's encrypted env, never in the repo.
 
 ## What was taken out
 
